@@ -1,12 +1,11 @@
-{
-  pkgs,
-  lib,
-  modulesPath,
-  ...
+{ pkgs
+, lib
+, modulesPath
+, ...
 }: {
   system.stateVersion = "24.05";
   boot.tmp.useTmpfs = false;
-  boot.kernelModules = ["br_netfilter" "bridge"];
+  boot.kernelModules = [ "br_netfilter" "bridge" ];
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
     "net.ipv4.ip_nonlocal_bind" = 1;
@@ -38,21 +37,15 @@
   };
 
   nix = {
-    settings.substituters = [
-      "https://mirrors.ustc.edu.cn/nix-channels/store"
-      "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store"
-      "https://mirrors.bfsu.edu.cn/nix-channels/store"
-      "https://cache.nixos.org/"
-    ];
     package = pkgs.nixFlakes;
-    settings.experimental-features = ["nix-command" "flakes"];
+    settings.experimental-features = [ "nix-command" "flakes" ];
   };
 
   documentation.enable = false;
   environment.noXlibs = true;
   nixpkgs.overlays = lib.singleton (lib.const (super: {
-    openjdk11 = super.openjdk11.override {headless = true;};
-    openjdk17 = super.openjdk17.override {headless = true;};
+    openjdk11 = super.openjdk11.override { headless = true; };
+    openjdk17 = super.openjdk17.override { headless = true; };
     qemu_kvm = super.qemu.override {
       hostCpuOnly = true;
       numaSupport = false;
@@ -98,27 +91,8 @@
     lm_sensors
   ];
 
-  programs.fish = {
+  programs.zsh = {
     enable = true;
-    interactiveShellInit = ''
-      function take
-        mkdir -p "$argv";
-        cd "$argv";
-      end
-      function fish_command_not_found
-        echo Did not find command $argv[1]
-      end
-    '';
-    shellAbbrs = {
-      po = "systemctl poweroff";
-      s = "systemctl status";
-      j = "journalctl -feu";
-      reboot = "systemctl reboot";
-    };
-    promptInit = ''
-      function fish_greeting
-      end
-    '';
   };
   programs.command-not-found.enable = false;
   services.openssh.enable = true;
