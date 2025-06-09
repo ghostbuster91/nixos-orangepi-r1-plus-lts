@@ -65,7 +65,7 @@
     };
   }));
 
-  users.defaultUserShell = pkgs.fish;
+  users.defaultUserShell = pkgs.zsh;
   users.users.root.initialPassword = "";
 
   time.timeZone = "Asia/Shanghai";
