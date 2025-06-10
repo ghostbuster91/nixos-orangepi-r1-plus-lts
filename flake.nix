@@ -11,6 +11,7 @@
   }: let
     orangepi-r1-plus-lts-config = nixpkgs.lib.nixosSystem {
       modules = [
+        ./custom.nix
         ./config.nix
         ./sd-image-aarch64-orangepi-r1plus.nix
         ./sd-image.nix
