@@ -4,28 +4,32 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    self,
-    flake-utils,
-    nixpkgs,
-  }: let
-    orangepi-r1-plus-lts-config = nixpkgs.lib.nixosSystem {
-      modules = [
-        ./custom.nix
-        ./config.nix
-        ./sd-image-aarch64-orangepi-r1plus.nix
-        ./sd-image.nix
-      ];
-      system = "aarch64-linux";
-    };
-  in
-    (flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = import nixpkgs {inherit system;};
-    in {
+  outputs =
+    { self
+    , flake-utils
+    , nixpkgs
+    ,
+    }:
+    let
+      orangepi-r1-plus-lts-config = nixpkgs.lib.nixosSystem {
+        modules = [
+          ./custom.nix
+          ./config.nix
+          ./sd-image-aarch64-orangepi-r1plus.nix
+          ./sd-image.nix
+        ];
+        system = "aarch64-linux";
+      };
+    in
+    (flake-utils.lib.eachDefaultSystem (system:
+    let
+      pkgs = import nixpkgs { inherit system; };
+    in
+    {
       packages.default = orangepi-r1-plus-lts-config.config.system.build.sdImage;
-      formatter = pkgs.alejandra;
+      formatter = pkgs.nixpkgs-fmt;
       devShells.default = pkgs.mkShell {
-        packages = [pkgs.nixos-rebuild];
+        packages = [ pkgs.nixos-rebuild ];
       };
     }))
     // {

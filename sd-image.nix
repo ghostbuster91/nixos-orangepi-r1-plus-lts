@@ -6,12 +6,11 @@
 #
 # The derivation for the SD image will be placed in
 # config.system.build.sdImage
-{
-  config,
-  lib,
-  pkgs,
-  modulesPath,
-  ...
+{ config
+, lib
+, pkgs
+, modulesPath
+, ...
 }:
 with lib; let
   rootfsImage = pkgs.callPackage (modulesPath + "/../lib/make-ext4-fs.nix") {
@@ -33,8 +32,9 @@ with lib; let
 
   compressLevelCmdLineArg = with config.sdImage;
     lib.optionalString (compressImageLevel != null)
-    "-${toString compressImageLevel}";
-in {
+      "-${toString compressImageLevel}";
+in
+{
   imports = [
     (modulesPath + "/profiles/all-hardware.nix")
   ];
@@ -146,77 +146,79 @@ in {
       };
     };
 
-    sdImage.storePaths = [config.system.build.toplevel];
+    sdImage.storePaths = [ config.system.build.toplevel ];
 
-    system.build.sdImage = pkgs.callPackage ({
-      stdenv,
-      dosfstools,
-      e2fsprogs,
-      mtools,
-      libfaketime,
-      util-linux,
-      zstd,
-      xz,
-    }:
-      stdenv.mkDerivation {
-        name = config.sdImage.imageName;
+    system.build.sdImage = pkgs.callPackage
+      ({ stdenv
+       , dosfstools
+       , e2fsprogs
+       , mtools
+       , libfaketime
+       , util-linux
+       , zstd
+       , xz
+       ,
+       }:
+        stdenv.mkDerivation {
+          name = config.sdImage.imageName;
 
-        nativeBuildInputs = [dosfstools e2fsprogs mtools libfaketime util-linux zstd xz];
+          nativeBuildInputs = [ dosfstools e2fsprogs mtools libfaketime util-linux zstd xz ];
 
-        buildInputs = lib.optional (config.sdImage.ubootPackage != null) config.sdImage.ubootPackage;
+          buildInputs = lib.optional (config.sdImage.ubootPackage != null) config.sdImage.ubootPackage;
 
-        buildCommand = ''
-          mkdir -p $out/nix-support $out/sd-image
-          export img=$out/sd-image/${config.sdImage.imageName}
+          buildCommand = ''
+            mkdir -p $out/nix-support $out/sd-image
+            export img=$out/sd-image/${config.sdImage.imageName}
 
-          echo "${pkgs.stdenv.buildPlatform.system}" > $out/nix-support/system
-          echo "file sd-image $img${compressedImageExtension}" >> $out/nix-support/hydra-build-products
+            echo "${pkgs.stdenv.buildPlatform.system}" > $out/nix-support/system
+            echo "file sd-image $img${compressedImageExtension}" >> $out/nix-support/hydra-build-products
 
-          blockSize=512
-          rootPartitionOffsetBlocks=$((${toString config.sdImage.partitionsOffset} * 1024 * 1024 / blockSize))
-          rootPartitionOffsetBytes=$((rootPartitionOffsetBlocks * blockSize))
+            blockSize=512
+            rootPartitionOffsetBlocks=$((${toString config.sdImage.partitionsOffset} * 1024 * 1024 / blockSize))
+            rootPartitionOffsetBytes=$((rootPartitionOffsetBlocks * blockSize))
 
-          # Create the image file sized to fit /boot/firmware and /, plus slack for the gap.
-          rootPartitionSizeBlocks=$(du -B $blockSize --apparent-size ${rootfsImage} | awk '{ print $1 }')
-          rootPartitionSizeBytes=$((rootPartitionSizeBlocks * blockSize))
+            # Create the image file sized to fit /boot/firmware and /, plus slack for the gap.
+            rootPartitionSizeBlocks=$(du -B $blockSize --apparent-size ${rootfsImage} | awk '{ print $1 }')
+            rootPartitionSizeBytes=$((rootPartitionSizeBlocks * blockSize))
 
-          imageSizeBytes=$((rootPartitionOffsetBytes + rootPartitionSizeBytes))
-          truncate -s $imageSizeBytes $img
+            imageSizeBytes=$((rootPartitionOffsetBytes + rootPartitionSizeBytes))
+            truncate -s $imageSizeBytes $img
 
-          # The "bootable" partition is where u-boot will look file for the bootloader
-          # information (dtbs, extlinux.conf file).
-          sfdisk $img <<EOF
-              label: dos
+            # The "bootable" partition is where u-boot will look file for the bootloader
+            # information (dtbs, extlinux.conf file).
+            sfdisk $img <<EOF
+                label: dos
 
-              start=$rootPartitionOffsetBlocks, type=linux, bootable
-          EOF
+                start=$rootPartitionOffsetBlocks, type=linux, bootable
+            EOF
 
-          # Copy the rootfs into the SD image
-          eval $(partx $img -o START,SECTORS --nr 1 --pairs)
-          echo "Root partition: $START,$SECTORS"
-          dd conv=notrunc if=${rootfsImage} of=$img seek=$START count=$SECTORS
+            # Copy the rootfs into the SD image
+            eval $(partx $img -o START,SECTORS --nr 1 --pairs)
+            echo "Root partition: $START,$SECTORS"
+            dd conv=notrunc if=${rootfsImage} of=$img seek=$START count=$SECTORS
 
-          ${lib.optionalString (config.sdImage.ubootPackage != null) ''
-            # Install U-Boot binary image
-            echo "Install U-Boot: ${config.sdImage.ubootPackage}"
-            dd if=${config.sdImage.ubootPackage}/idbloader.img of=$img seek=64 conv=notrunc
-            dd if=${config.sdImage.ubootPackage}/u-boot.itb of=$img seek=16384 conv=notrunc
-          ''}
+            ${lib.optionalString (config.sdImage.ubootPackage != null) ''
+              # Install U-Boot binary image
+              echo "Install U-Boot: ${config.sdImage.ubootPackage}"
+              dd if=${config.sdImage.ubootPackage}/idbloader.img of=$img seek=64 conv=notrunc
+              dd if=${config.sdImage.ubootPackage}/u-boot.itb of=$img seek=16384 conv=notrunc
+            ''}
 
-          ${config.sdImage.postBuildCommands}
-          ${lib.optionalString config.sdImage.compressImage
-            (
-              if config.sdImage.compressImageMethod == "zstd"
-              then ''
-                zstd -T$NIX_BUILD_CORES ${compressLevelCmdLineArg} --rm $img
-              ''
-              else ''
-                xz -T$NIX_BUILD_CORES -F${config.sdImage.compressImageMethod} ${compressLevelCmdLineArg} $img
-              ''
-            )}
+            ${config.sdImage.postBuildCommands}
+            ${lib.optionalString config.sdImage.compressImage
+              (
+                if config.sdImage.compressImageMethod == "zstd"
+                then ''
+                  zstd -T$NIX_BUILD_CORES ${compressLevelCmdLineArg} --rm $img
+                ''
+                else ''
+                  xz -T$NIX_BUILD_CORES -F${config.sdImage.compressImageMethod} ${compressLevelCmdLineArg} $img
+                ''
+              )}
 
-        '';
-      }) {};
+          '';
+        })
+      { };
 
     boot.postBootCommands = lib.mkIf config.sdImage.expandOnBoot ''
       # On the first boot do some maintenance tasks

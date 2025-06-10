@@ -3,7 +3,6 @@ let
   username = "admin";
 in
 {
-
   users.users.${username} = {
     name = username;
     home = "/home/${username}";
