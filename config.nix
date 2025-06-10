@@ -92,7 +92,7 @@
   };
   programs.command-not-found.enable = false;
   services.openssh.enable = true;
-  services.openssh.settings.PermitRootLogin = "yes";
+  services.openssh.settings.PermitRootLogin = "no";
 
   environment = {
     localBinInPath = true;
