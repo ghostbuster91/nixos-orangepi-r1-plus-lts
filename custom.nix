@@ -3,6 +3,8 @@ let
   username = "admin";
 in
 {
+  networking.hostName = "sip-router";
+
   users.users.${username} = {
     name = username;
     home = "/home/${username}";
@@ -12,4 +14,6 @@ in
     openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFFeU4GXH+Ae00DipGGJN7uSqPJxWFmgRo9B+xjV3mK4" ];
     initialHashedPassword = "$y$j9T$aeZHaSe8QKeC0ruAi9TKo.$zooI/IZUwOupVDbMReaukiargPrF93H/wdR/.0zsrr.";
   };
+
+  security.sudo.wheelNeedsPassword = false;
 }
