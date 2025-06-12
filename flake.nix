@@ -17,6 +17,7 @@
         modules = [
           ./custom.nix
           ./config.nix
+          ./kamalio.nix
           ./sd-image-aarch64-orangepi-r1plus.nix
           ./sd-image.nix
         ];
