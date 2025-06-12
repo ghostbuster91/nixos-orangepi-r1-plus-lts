@@ -1,6 +1,5 @@
 { pkgs
 , lib
-, modulesPath
 , ...
 }: {
   system.stateVersion = "25.05";
@@ -42,6 +41,7 @@
 
   documentation.enable = false;
   nixpkgs.config.allowX11 = false;
+  nixpkgs.config.allowUnfree = true;
   nixpkgs.overlays = lib.singleton (lib.const (super: {
     openjdk11 = super.openjdk11.override { headless = true; };
     openjdk17 = super.openjdk17.override { headless = true; };
@@ -74,6 +74,7 @@
 
   services.udisks2.enable = lib.mkForce false;
   environment.systemPackages = with pkgs; [
+    ngrok
     lsof
     wget
     curl
@@ -113,20 +114,55 @@
 
   networking = {
     useDHCP = false;
+    useNetworkd = true;
     networkmanager.enable = false;
     firewall.enable = false;
   };
   systemd.network = {
     enable = true;
-    networks."lan" = {
-      matchConfig.Name = "enu1";
-      networkConfig.DHCP = "no";
-      linkConfig.RequiredForOnline = "no";
+    netdevs = {
+      # Create the bridge interface
+      "20-br-lan" = {
+        netdevConfig = {
+          Kind = "bridge";
+          Name = "br-lan";
+        };
+      };
     };
-    networks."wan" = {
-      matchConfig.Name = "end0";
-      networkConfig.DHCP = "yes";
-      linkConfig.RequiredForOnline = "yes";
+    networks = {
+      "lan" = {
+        matchConfig.Name = "enu1";
+        networkConfig = {
+          Bridge = "br-lan";
+          ConfigureWithoutCarrier = true;
+        };
+        linkConfig.RequiredForOnline = "enslaved";
+      };
+      "wan" = {
+        matchConfig.Name = "end0";
+        networkConfig = {
+          Bridge = "br-lan";
+          ConfigureWithoutCarrier = true;
+        };
+        linkConfig.RequiredForOnline = "enslaved";
+      };
+
+      "40-br-lan" = {
+        matchConfig.Name = "br-lan";
+        bridgeConfig = { };
+        networkConfig = {
+          MulticastDNS = true;
+          ConfigureWithoutCarrier = true;
+          # start a DHCP Client for IPv4 Addressing/Routing
+          DHCP = "ipv4";
+          # accept Router Advertisements for Stateless IPv6 Autoconfiguraton (SLAAC)
+          IPv6AcceptRA = true;
+          DNSOverTLS = false;
+          DNSSEC = false;
+          IPv6PrivacyExtensions = false;
+        };
+        linkConfig.RequiredForOnline = "no";
+      };
     };
   };
 }

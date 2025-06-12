@@ -17,7 +17,6 @@
         modules = [
           ./custom.nix
           ./config.nix
-          ./kamalio.nix
           ./sd-image-aarch64-orangepi-r1plus.nix
           ./sd-image.nix
         ];
@@ -32,12 +31,12 @@
       packages.default = orangepi-r1-plus-lts-config.config.system.build.sdImage;
       formatter = pkgs.nixpkgs-fmt;
       devShells.default = pkgs.mkShell {
-        packages = [ pkgs.nixos-rebuild pkgs.deploy-rs ];
+        packages = [ pkgs.nixos-rebuild pkgs.deploy-rs pkgs.cloudflared ];
       };
     }))
     // {
       deploy.nodes.orangepi-r1-plus-lts-config = {
-        hostname = "sip-router";
+        hostname = "sip-router-2";
         profiles.system = {
           sshUser = "admin";
           user = "root";

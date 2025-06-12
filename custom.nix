@@ -1,9 +1,11 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 let
   username = "admin";
 in
 {
   networking.hostName = "sip-router";
+
+  environment.systemPackages = [ (pkgs.callPackage ./sip-watcher { }) pkgs.tshark pkgs.wireshark-cli ];
 
   users.users.${username} = {
     name = username;
