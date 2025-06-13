@@ -1,11 +1,12 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 let
   username = "admin";
+  sip-watcher = pkgs.callPackage ./sip-watcher { };
 in
 {
   networking.hostName = "sip-router";
 
-  environment.systemPackages = [ (pkgs.callPackage ./sip-watcher { }) pkgs.tshark pkgs.wireshark-cli ];
+  environment.systemPackages = [ sip-watcher pkgs.tshark pkgs.wireshark-cli ];
 
   users.users.${username} = {
     name = username;
@@ -18,4 +19,20 @@ in
   };
 
   security.sudo.wheelNeedsPassword = false;
+
+  systemd.services.sip-watcher = {
+    description = "SIP watcher via pyshark";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+
+    serviceConfig = {
+      ExecStart = "${lib.getExe sip-watcher}";
+      Restart = "on-failure";
+      User = "root"; # lub utwórz dedykowanego użytkownika
+      CapabilityBoundingSet = "CAP_NET_RAW CAP_NET_ADMIN";
+      AmbientCapabilities = "CAP_NET_RAW CAP_NET_ADMIN";
+    };
+
+    wantedBy = [ "multi-user.target" ];
+  };
 }
