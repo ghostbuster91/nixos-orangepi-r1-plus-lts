@@ -3,41 +3,63 @@
 import pyshark
 import threading
 import paho.mqtt.publish as publish
+import json
+from datetime import datetime, timedelta
 
-# Konfiguracja MQTT
 MQTT_HOST = "192.168.20.55"
 MQTT_USER = "admin"
-MQTT_PASS = "123456789"
+MQTT_PASS = "123456"
 TOPIC = "ampio/sip/invite"
 
-state = 0
-reset_timer = None
+active_calls = {}  # Call-ID -> { state, from, to, last_update }
+current_global_state = "idle"
+SESSION_TIMEOUT = 900  # 15 minutes in seconds
 
-def send_mqtt(payload):
-    print(f"MQTT → {payload}")
-    publish.single(
-        topic=TOPIC,
-        payload=payload,
-        hostname=MQTT_HOST,
-        auth={"username": MQTT_USER, "password": MQTT_PASS}
-    )
+def now():
+    return datetime.now()
 
-def reset_state():
-    global state, reset_timer
-    if state == 1:
-        print("⏲️ Reset (timeout)")
-        send_mqtt("0")
-        state = 0
-    reset_timer = None
+def now_iso():
+    return now().isoformat(timespec='seconds')
 
-def schedule_reset(timeout=10):
-    global reset_timer
-    if reset_timer:
-        reset_timer.cancel()
-    reset_timer = threading.Timer(timeout, reset_state)
-    reset_timer.start()
+def determine_global_state():
+    if any(call["state"] == "active" for call in active_calls.values()):
+        return "active"
+    elif any(call["state"] == "ringing" for call in active_calls.values()):
+        return "ringing"
+    else:
+        return "idle"
 
-print("🔍 SIP watcher started (pyshark)...")
+def send_mqtt(global_state):
+    global current_global_state
+    if global_state != current_global_state:
+        payload = {
+            "state": global_state,
+            "active_calls": [
+                {k: v for k, v in call.items() if k != "last_update"} 
+                for call in active_calls.values()
+            ],
+            "timestamp": now_iso()
+        }
+        print(f"MQTT → {json.dumps(payload)}", flush=True)
+        publish.single(
+            topic=TOPIC,
+            payload=json.dumps(payload),
+            hostname=MQTT_HOST,
+            auth={"username": MQTT_USER, "password": MQTT_PASS}
+        )
+        current_global_state = global_state
+
+def cleanup_expired_sessions():
+    expired = []
+    cutoff = now() - timedelta(seconds=SESSION_TIMEOUT)
+    for call_id, call in list(active_calls.items()):
+        if call["last_update"] < cutoff:
+            print(f"🧹 Expiring stale call: {call_id}", flush=True)
+            expired.append(call_id)
+            del active_calls[call_id]
+    return len(expired) > 0
+
+print("🔍 SIP watcher with Call-ID + timeout tracking started (pyshark)...", flush=True)
 
 capture = pyshark.LiveCapture(
     interface="br-lan",
@@ -50,29 +72,38 @@ for packet in capture.sniff_continuously():
         method = getattr(sip, 'Method', None)
         status_line = getattr(sip, 'status_line', "")
         cseq_method = getattr(sip, 'cseq_method', "")
+        call_id = getattr(sip, 'call_id', None)
+        from_uri = getattr(sip, 'from', "")
+        to_uri = getattr(sip, 'to', "")
+
+        if call_id is None:
+            continue
+
+        timestamp = now()
 
         if "180 Ringing" in status_line:
-            if state == 0:
-                print("🔔 Dzwoni")
-                send_mqtt("1")
-                state = 1
-                schedule_reset()
+            active_calls[call_id] = {
+                "state": "ringing",
+                "from": from_uri,
+                "to": to_uri,
+                "last_update": timestamp
+            }
         elif "200 OK" in status_line and cseq_method == "INVITE":
-            print("✅ Odebrano")
-            if state != 0:
-                send_mqtt("0")
-            state = 0
-            if reset_timer:
-                reset_timer.cancel()
-                reset_timer = None
+            active_calls[call_id] = {
+                "state": "active",
+                "from": from_uri,
+                "to": to_uri,
+                "last_update": timestamp
+            }
         elif method in ["CANCEL", "BYE"]:
-            print("❌ Rozłączono")
-            if state != 0:
-                send_mqtt("0")
-            state = 0
-            if reset_timer:
-                reset_timer.cancel()
-                reset_timer = None
+            if call_id in active_calls:
+                print(f"❌ Call ended via {method}: {call_id}", flush=True)
+                del active_calls[call_id]
+
+        expired = cleanup_expired_sessions()
+        new_state = determine_global_state()
+        if new_state != current_global_state or expired:
+            send_mqtt(new_state)
 
     except AttributeError:
         continue
