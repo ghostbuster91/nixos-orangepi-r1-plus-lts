@@ -29,10 +29,13 @@ in
       ExecStart = "${lib.getExe sip-watcher}";
       Restart = "on-failure";
       User = "root"; # lub utwórz dedykowanego użytkownika
+      Environment = "PYTHONUNBUFFERED=1";
       CapabilityBoundingSet = "CAP_NET_RAW CAP_NET_ADMIN";
       AmbientCapabilities = "CAP_NET_RAW CAP_NET_ADMIN";
     };
 
     wantedBy = [ "multi-user.target" ];
   };
+
+  services.tailscale.enable = true;
 }
