@@ -21,6 +21,14 @@ def now():
 def now_iso():
     return now().isoformat(timespec='seconds')
 
+def log_active_calls():
+    print("Current active calls:", flush=True)
+    for call_id, data in active_calls.items():
+        base = f"  • {call_id} – {data['state']} | from: {data['from']} | to: {data['to']} | last_update: {data['last_update']}"
+        if "expires_at" in data:
+            base += f" | expires_at: {data['expires_at']}"
+        print(base, flush=True)
+
 def determine_global_state():
     if any(call["state"] == "active" for call in active_calls.values()):
         return "active"
@@ -102,6 +110,7 @@ for packet in capture.sniff_continuously():
                 "last_update": timestamp,
                 "session_timeout": DEFAULT_SESSION_TIMEOUT,
             }
+            log_active_calls()
 
         elif "200 OK" in status_line and cseq_method == "INVITE":
             timeout = parse_session_expires(sip)
@@ -113,17 +122,22 @@ for packet in capture.sniff_continuously():
                 "last_update": timestamp,
                 "session_timeout": timeout,
             }
+            log_active_calls()
 
         elif method in ["CANCEL", "BYE"]:
             if dialog_id in active_calls:
                 print(f"❌ Call ended via {method}: {dialog_id}", flush=True)
                 del active_calls[dialog_id]
+                log_active_calls()
+            else
+                print(f"Unknown call end via {method}: {dialog_id}")
 
         elif method in ["INVITE", "UPDATE"] and dialog_id in active_calls:
             timeout = parse_session_expires(sip)
             print(f"🔄 Refreshing session via {method}: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
             active_calls[dialog_id]["last_update"] = timestamp
             active_calls[dialog_id]["session_timeout"] = timeout
+            log_active_calls()
 
         expired = cleanup_expired_sessions()
         new_state = determine_global_state()
