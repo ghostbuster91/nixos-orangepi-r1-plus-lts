@@ -67,7 +67,7 @@
   users.defaultUserShell = pkgs.zsh;
   users.users.root.initialPassword = "";
 
-  time.timeZone = "Asia/Shanghai";
+  time.timeZone = "Europe/Warsaw";
   i18n = {
     defaultLocale = "en_US.UTF-8";
   };
