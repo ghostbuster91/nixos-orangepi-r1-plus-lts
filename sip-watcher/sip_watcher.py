@@ -115,6 +115,16 @@ for packet in capture.sniff_continuously():
         elif "200 OK" in status_line and cseq_method == "INVITE":
             timeout = parse_session_expires(sip)
             print(f"📞 Call accepted: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
+            log_active_calls()
+
+            to_remove = [
+                cid for cid, data in active_calls.items()
+                if data["state"] == "active" and cid != dialog_id
+            ]
+            for cid in to_remove:
+                print(f"🧹 Removing other active call: {cid} (conflict with new active)", flush=True)
+                del active_calls[cid]
+
             active_calls[dialog_id] = {
                 "state": "active",
                 "from": from_uri,
@@ -122,6 +132,7 @@ for packet in capture.sniff_continuously():
                 "last_update": timestamp,
                 "session_timeout": timeout,
             }
+            print(f"📞 Call processed: {dialog_id}", flush=True)
             log_active_calls()
 
         elif method in ["CANCEL", "BYE"]:
@@ -129,12 +140,12 @@ for packet in capture.sniff_continuously():
                 print(f"❌ Call ended via {method}: {dialog_id}", flush=True)
                 del active_calls[dialog_id]
                 log_active_calls()
-            else
+            else:
                 print(f"Unknown call end via {method}: {dialog_id}")
 
         elif method in ["INVITE", "UPDATE"] and dialog_id in active_calls:
             timeout = parse_session_expires(sip)
-            print(f"🔄 Refreshing session via {method}: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
+            print(f"Refreshing session via {method}: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
             active_calls[dialog_id]["last_update"] = timestamp
             active_calls[dialog_id]["session_timeout"] = timeout
             log_active_calls()
