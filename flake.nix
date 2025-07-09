@@ -36,7 +36,7 @@
     }))
     // {
       deploy.nodes.orangepi-r1-plus-lts-config = {
-        hostname = "sip-router-2";
+        hostname = "sip-router.tail3d300a.ts.net";
         profiles.system = {
           sshUser = "admin";
           user = "root";

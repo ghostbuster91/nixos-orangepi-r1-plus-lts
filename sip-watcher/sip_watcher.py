@@ -5,13 +5,29 @@ import threading
 import paho.mqtt.publish as publish
 import json
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 
 MQTT_HOST = "192.168.20.55"
 MQTT_USER = "admin"
 MQTT_PASS = "123456"
 TOPIC = "ampio/sip/invite"
 
-active_calls = {}  # dialog_id -> { state, from, to, last_update, session_timeout }
+@dataclass(frozen=True)
+class DialogId:
+    call_id: str
+    tag1: str
+    tag2: str
+
+    def __init__(self, call_id: str, from_tag: str, to_tag: str):
+        tags = sorted([from_tag, to_tag])
+        object.__setattr__(self, "call_id", call_id)
+        object.__setattr__(self, "tag1", tags[0])
+        object.__setattr__(self, "tag2", tags[1])
+
+    def __str__(self):
+        return f"{self.call_id};tags={self.tag1}_{self.tag2}"
+
+active_calls: dict[DialogId, dict] = {}
 current_global_state = "idle"
 DEFAULT_SESSION_TIMEOUT = 900  # fallback 15 min
 
@@ -98,10 +114,22 @@ for packet in capture.sniff_continuously():
         if call_id is None:
             continue
 
-        dialog_id = f"{call_id};from-tag={from_tag};to-tag={to_tag}"
+        dialog_id = DialogId(call_id, from_tag, to_tag)
         timestamp = now()
 
         if "180 Ringing" in status_line:
+            # Deduplicate ringing by from_uri (phone number)
+            existing = None
+            for did, call in active_calls.items():
+                if call["state"] == "ringing" and call["from"] == from_uri:
+                    existing = did
+                    break
+
+            if existing:
+                print(f"🔁 Updating existing ringing for {from_uri} (was {existing}, now {dialog_id})", flush=True)
+                # Update existing entry with new dialog_id data
+                del active_calls[existing]
+            
             print(f"🔔 Ringing: {dialog_id}", flush=True)
             active_calls[dialog_id] = {
                 "state": "ringing",
@@ -111,6 +139,7 @@ for packet in capture.sniff_continuously():
                 "session_timeout": DEFAULT_SESSION_TIMEOUT,
             }
             log_active_calls()
+
 
         elif "200 OK" in status_line and cseq_method == "INVITE":
             timeout = parse_session_expires(sip)
@@ -135,13 +164,28 @@ for packet in capture.sniff_continuously():
             print(f"📞 Call processed: {dialog_id}", flush=True)
             log_active_calls()
 
-        elif method in ["CANCEL", "BYE"]:
+        elif method == "CANCEL":
+            # cancel does not have to_tag so we need to compare by call_id
+            found = None
+            for did, call in active_calls.items():
+                if did.call_id == call_id and call["state"] == "ringing":
+                    found = did
+                    break
+            if found:
+                print(f"❌ Call cancelled via CANCEL: {found}", flush=True)
+                del active_calls[found]
+                log_active_calls()
+            else:
+                print(f"⚠️ Unknown call cancel: {call_id}", flush=True)
+
+        elif method == "BYE":
             if dialog_id in active_calls:
-                print(f"❌ Call ended via {method}: {dialog_id}", flush=True)
+                print(f"❌ Call ended via BYE: {dialog_id}", flush=True)
                 del active_calls[dialog_id]
                 log_active_calls()
             else:
-                print(f"Unknown call end via {method}: {dialog_id}")
+                print(f"⚠️ Unknown call end via BYE: {dialog_id}", flush=True)
+
 
         elif method in ["INVITE", "UPDATE"] and dialog_id in active_calls:
             timeout = parse_session_expires(sip)
