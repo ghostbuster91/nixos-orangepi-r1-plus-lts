@@ -206,7 +206,7 @@ for packet in capture.sniff_continuously():
                     removed_any = True
 
                 if not removed_any:
-                    print(f"⚠️ No active calls found for {from_number} to end via {method} via {call["from"]}", flush=True)
+                    print(f"⚠️ No active calls found for {from_number} to end via {method} via {from_number}", flush=True)
 
         elif method in ["INVITE", "UPDATE"] and dialog_id in active_calls:
             timeout = parse_session_expires(sip)
