@@ -30,7 +30,50 @@ class DialogId:
 
 active_calls: dict[DialogId, dict] = {}
 current_global_state = "idle"
-DEFAULT_SESSION_TIMEOUT = 600  # fallback 10 min
+DEFAULT_SESSION_TIMEOUT = 180  # fallback 3 min
+
+class SipDialog:
+    def __init__(self, method, status_line, cseq_method, call_id, from_uri, to_uri, from_tag, to_tag, from_number):
+        self.method = method
+        self.status_line = status_line
+        self.cseq_method = cseq_method
+        self.call_id = call_id
+        self.from_uri = from_uri
+        self.to_uri = to_uri
+        self.from_tag = from_tag
+        self.to_tag = to_tag
+        self.from_number = from_number
+
+    @property
+    def id(self):
+        dialog_id = DialogId(self.call_id, self.from_tag, self.to_tag)
+        return dialog_id
+
+    def __str__(self):
+        parts = []
+        if self.method:
+            parts.append(f"📥 {self.method}")
+        elif self.status_line:
+            parts.append(f"📤 {self.status_line}")
+        else:
+            parts.append("📄 <no method/status>")
+
+        if self.from_number:
+            parts.append(f"from: {self.from_number}")
+        if self.to_uri:
+            parts.append(f"to: {self.to_uri}")
+
+        if self.call_id:
+            parts.append(f"Call-ID: {self.call_id}")
+        if self.from_tag or self.to_tag:
+            tags = []
+            if self.from_tag:
+                tags.append(f"from-tag={self.from_tag}")
+            if self.to_tag:
+                tags.append(f"to-tag={self.to_tag}")
+            parts.append(f"tags: {', '.join(tags)}")
+
+        return " | ".join(parts)
 
 def now():
     return datetime.now()
@@ -80,7 +123,7 @@ def cleanup_expired_sessions():
     for call_id, call in list(active_calls.items()):
         timeout = call.get("session_timeout", DEFAULT_SESSION_TIMEOUT)
         cutoff = now() - timedelta(seconds=timeout)
-        if call["last_update"] < cutoff:
+        if call["last_update"] < cutoff and call["state"] == "ringing":
             print(f"🧹 Expiring stale call: {call_id} (timeout={timeout}s)", flush=True)
             expired.append(call_id)
             del active_calls[call_id]
@@ -108,55 +151,57 @@ capture = pyshark.LiveCapture(
 for packet in capture.sniff_continuously():
     try:
         sip = packet.sip
-        method = getattr(sip, 'Method', None)
-        status_line = getattr(sip, 'status_line', "")
-        cseq_method = getattr(sip, 'cseq_method', "")
-        call_id = getattr(sip, 'call_id', None)
-        from_uri = getattr(sip, 'from', "")
-        to_uri = getattr(sip, 'to', "")
-        from_tag = getattr(sip, 'from_tag', "")
-        to_tag = getattr(sip, 'to_tag', "")
-        from_number = extract_phone(from_uri)
+        dialog = SipDialog(
+            method=getattr(sip, 'Method', None),
+            status_line=getattr(sip, 'status_line', ""),
+            cseq_method=getattr(sip, 'cseq_method', ""),
+            call_id=getattr(sip, 'call_id', None),
+            from_uri=getattr(sip, 'from', ""),
+            to_uri=getattr(sip, 'to', ""),
+            from_tag=getattr(sip, 'from_tag', ""),
+            to_tag=getattr(sip, 'to_tag', ""),
+            from_number=extract_phone(getattr(sip, 'from', ""))
+        )
 
-        if call_id is None:
-            print(f"call_id is none, method {method}")
+        if dialog.call_id is None:
+            print(f"call_id is none, method {dialog.method}")
             continue
 
-        dialog_id = DialogId(call_id, from_tag, to_tag)
         timestamp = now()
 
-        print(f"new packet method: {method}, dialog_id: {dialog_id}, from_number: {from_number}")
+        print(dialog)
         log_active_calls()
 
-        if "180 Ringing" in status_line:
+        if "180 Ringing" in dialog.status_line:
             # Deduplicate ringing by from_number (phone number)
             existing = None
             for did, call in active_calls.items():
-                if call["state"] == "ringing" and call["from"] == from_number:
+                if call["state"] == "ringing" and call["from"] == dialog.from_number:
                     existing = did
                     break
 
             if existing:
-                print(f"🔁 Updating existing ringing for {from_number} (was {existing}, now {dialog_id})", flush=True)
+                print(f"🔁 Updating existing ringing for {dialog.from_number} (was {existing}, now {dialog.id})", flush=True)
                 # Update existing entry with new dialog_id data
                 del active_calls[existing]
             
-            print(f"🔔 Ringing: {dialog_id}", flush=True)
-            active_calls[dialog_id] = {
+            print(f"🔔 Ringing: {dialog.id}", flush=True)
+            active_calls[dialog.id] = {
                 "state": "ringing",
-                "from": from_number,
-                "to": to_uri,
+                "from": dialog.from_number,
+                "to": dialog.to_uri,
                 "last_update": timestamp,
                 "session_timeout": DEFAULT_SESSION_TIMEOUT,
             }
+            log_active_calls()
 
-        elif "200 OK" in status_line and cseq_method == "INVITE":
+        elif "200 OK" in dialog.status_line and dialog.cseq_method == "INVITE":
             timeout = parse_session_expires(sip)
-            print(f"📞 Call accepted: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
+            print(f"📞 Call accepted: {dialog.id} (Session-Expires: {timeout}s)", flush=True)
 
             to_remove = [
                 cid for cid, data in active_calls.items()
-                if data["state"] == "active" and cid != dialog_id
+                if data["state"] == "active" and cid != dialog.id
             ]
             for cid in to_remove:
                 print(f"🧹 Removing other active call: {cid} (conflict with new active)", flush=True)
@@ -165,56 +210,52 @@ for packet in capture.sniff_continuously():
             # Remove any ringing entries with the same phone number
             to_remove = [
                 cid for cid, data in active_calls.items()
-                if data["state"] == "ringing" and data["from"] == from_number and cid != dialog_id
+                if data["state"] == "ringing" and data["from"] == dialog.from_number and cid != dialog.id
             ]
             for cid in to_remove:
                 print(f"🧹 Removing duplicate ringing from same number: {cid}", flush=True)
                 del active_calls[cid]
 
-            active_calls[dialog_id] = {
+            active_calls[dialog.id] = {
                 "state": "active",
-                "from": from_number,
-                "to": to_uri,
+                "from": dialog.from_number,
+                "to": dialog.to_uri,
                 "last_update": timestamp,
                 "session_timeout": timeout,
             }
-            print(f"📞 Call processed: {dialog_id}", flush=True)
+            print(f"📞 Call processed: {dialog.id}", flush=True)
+            log_active_calls()
 
-        elif method in ["CANCEL"]:
+        elif dialog.method in ["CANCEL"]:
             removed_any = False
-            to_remove = [cid for cid, call in active_calls.items() if call["from"] == from_number]
+            to_remove = [cid for cid, call in active_calls.items() if call["from"] == dialog.from_number]
             for cid in to_remove:
-                print(f"❌ Call ended via {method}: {cid}", flush=True)
+                print(f"❌ Call ended via {dialog.method}: {cid}", flush=True)
                 del active_calls[cid]
                 removed_any = True
 
             if not removed_any:
-                print(f"⚠️ No active calls found for {from_number} to end via {method}", flush=True)
+                print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method}", flush=True)
+            log_active_calls()
 
-        elif method == "BYE":
-            if dialog_id in active_calls:
-                print(f"❌ Call ended via BYE: {dialog_id}", flush=True)
-                del active_calls[dialog_id]
+        elif dialog.method == "BYE":
+            if dialog.id in active_calls:
+                print(f"❌ Call ended via BYE: {dialog.id}", flush=True)
+                del active_calls[dialog.id]
             else:
-                print(f"⚠️ No active calls found for {dialog_id} to end via {method} via dialog_id {dialog_id}", flush=True)
+                print(f"⚠️ No active calls found for {dialog.id} to end via {dialog.method} via dialog_id {dialog.id}", flush=True)
                 print("Looking by from")
                 removed_any = False
-                to_remove = [cid for cid, call in active_calls.items() if call["from"] == from_number]
+                to_remove = [cid for cid, call in active_calls.items() if call["from"] == dialog.from_number]
                 for cid in to_remove:
-                    print(f"❌ Call ended via {method}: {cid}", flush=True)
+                    print(f"❌ Call ended via {dialog.method}: {cid}", flush=True)
                     del active_calls[cid]
                     removed_any = True
 
                 if not removed_any:
-                    print(f"⚠️ No active calls found for {from_number} to end via {method} via {from_number}", flush=True)
+                    print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method} via {dialog.from_number}", flush=True)
+            log_active_calls()
 
-        elif method in ["INVITE", "UPDATE"] and dialog_id in active_calls:
-            timeout = parse_session_expires(sip)
-            print(f"Refreshing session via {method}: {dialog_id} (Session-Expires: {timeout}s)", flush=True)
-            active_calls[dialog_id]["last_update"] = timestamp
-            active_calls[dialog_id]["session_timeout"] = timeout
-
-        log_active_calls()
         expired = cleanup_expired_sessions()
         new_state = determine_global_state()
         if new_state != current_global_state or expired:
