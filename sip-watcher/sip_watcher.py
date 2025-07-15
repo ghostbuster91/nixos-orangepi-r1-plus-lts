@@ -12,6 +12,32 @@ MQTT_HOST = "192.168.20.55"
 MQTT_USER = "admin"
 MQTT_PASS = "123456"
 TOPIC = "ampio/sip/invite"
+DEFAULT_SESSION_TIMEOUT = 180  # fallback 3 min
+
+@dataclass
+class ActiveCall:
+    state: str
+    from_number: str
+    to_uri: str
+    last_update: datetime
+    session_timeout: int = DEFAULT_SESSION_TIMEOUT
+    ringing_timer_start: datetime = None
+
+    def to_dict(self):
+        return {
+            "state": self.state,
+            "from": self.from_number,
+            "to": self.to_uri,
+            "last_update": self.last_update,
+            "session_timeout": self.session_timeout,
+        }
+
+    def __str__(self):
+        return (
+            f"{self.state} | from: {self.from_number} | to: {self.to_uri} "
+            f"| last_update: {self.last_update} | ringing_timer_start: {self.ringing_timer_start}"
+        )
+
 
 @dataclass(frozen=True)
 class DialogId:
@@ -28,9 +54,6 @@ class DialogId:
     def __str__(self):
         return f"{self.call_id};tags={self.tag1}_{self.tag2}"
 
-active_calls: dict[DialogId, dict] = {}
-current_global_state = "idle"
-DEFAULT_SESSION_TIMEOUT = 180  # fallback 3 min
 
 class SipDialog:
     def __init__(self, method, status_line, cseq_method, call_id, from_uri, to_uri, from_tag, to_tag, from_number):
@@ -75,28 +98,31 @@ class SipDialog:
 
         return " | ".join(parts)
 
+
+active_calls: dict[DialogId, ActiveCall] = {}
+current_global_state = "idle"
+
+
 def now():
     return datetime.now()
 
-def now_iso():
-    return now().isoformat(timespec='seconds')
 
 def log_active_calls():
     print("Current active calls:", flush=True)
     for call_id, data in active_calls.items():
-        base = f"  • {call_id} – {data['state']} | from: {data['from']} | to: {data['to']} | last_update: {data['last_update']}"
-        if "expires_at" in data:
-            base += f" | expires_at: {data['expires_at']}"
+        base = f"  • {call_id} – {data}"
         print(base, flush=True)
     print("==================================")
 
+
 def determine_global_state():
-    if any(call["state"] == "active" for call in active_calls.values()):
+    if any(call.state == "active" for call in active_calls.values()):
         return "active"
-    elif any(call["state"] == "ringing" for call in active_calls.values()):
+    elif any(call.state == "ringing" for call in active_calls.values()):
         return "ringing"
     else:
         return "idle"
+
 
 def send_mqtt(global_state):
     global current_global_state
@@ -104,10 +130,10 @@ def send_mqtt(global_state):
         payload = {
             "state": global_state,
             "active_calls": [
-                {k: v for k, v in call.items() if k not in ["last_update", "session_timeout"]} 
+                {k: v for k, v in call.to_dict().items() if k not in ["last_update", "session_timeout"]} 
                 for call in active_calls.values()
             ],
-            "timestamp": now_iso()
+            "timestamp": now().isoformat(timespec='seconds')
         }
         print(f"MQTT → {json.dumps(payload)}", flush=True)
         publish.single(
@@ -118,16 +144,21 @@ def send_mqtt(global_state):
         )
         current_global_state = global_state
 
+
 def cleanup_expired_sessions():
     expired = []
     for call_id, call in list(active_calls.items()):
-        timeout = call.get("session_timeout", DEFAULT_SESSION_TIMEOUT)
-        cutoff = now() - timedelta(seconds=timeout)
-        if call["last_update"] < cutoff and call["state"] == "ringing":
-            print(f"🧹 Expiring stale call: {call_id} (timeout={timeout}s)", flush=True)
+        if call.state != "ringing":
+            continue
+        if call.ringing_timer_start is None:
+            continue  # jeszcze nie liczymy czasu
+        cutoff = call.ringing_timer_start + timedelta(seconds=call.session_timeout)
+        if now() >= cutoff:
+            print(f"🧹 Expiring ringing: {call_id} (timeout {call.session_timeout}s since {call.ringing_timer_start})", flush=True)
             expired.append(call_id)
             del active_calls[call_id]
     return len(expired) > 0
+
 
 def parse_session_expires(sip):
     if hasattr(sip, "session_expires"):
@@ -137,9 +168,29 @@ def parse_session_expires(sip):
             pass
     return DEFAULT_SESSION_TIMEOUT
 
+
 def extract_phone(uri):
     m = re.search(r'sip:(\d+)', uri)
     return m.group(1) if m else None
+
+
+def update_ringing_timeouts():
+    active_now = any(call.state == "active" for call in active_calls.values())
+
+    for call in active_calls.values():
+        if call.state != "ringing":
+            continue
+
+        if active_now:
+            if call.ringing_timer_start is not None:
+                print(f"⏹️ Reset ringing timer for call from {call.from_number} (new active call appeared)", flush=True)
+                call.ringing_timer_start = None
+        else:
+            if call.ringing_timer_start is None:
+                print(f"⏱️ Start ringing timeout for call from {call.from_number}", flush=True)
+                call.ringing_timer_start = now()
+
+## ==============================================================================
 
 print("🔍 SIP watcher with dynamic Session-Expires started...", flush=True)
 
@@ -149,118 +200,114 @@ capture = pyshark.LiveCapture(
 )
 
 for packet in capture.sniff_continuously():
-    try:
-        sip = packet.sip
-        dialog = SipDialog(
-            method=getattr(sip, 'Method', None),
-            status_line=getattr(sip, 'status_line', ""),
-            cseq_method=getattr(sip, 'cseq_method', ""),
-            call_id=getattr(sip, 'call_id', None),
-            from_uri=getattr(sip, 'from', ""),
-            to_uri=getattr(sip, 'to', ""),
-            from_tag=getattr(sip, 'from_tag', ""),
-            to_tag=getattr(sip, 'to_tag', ""),
-            from_number=extract_phone(getattr(sip, 'from', ""))
+    sip = packet.sip
+    dialog = SipDialog(
+        method=getattr(sip, 'Method', None),
+        status_line=getattr(sip, 'status_line', ""),
+        cseq_method=getattr(sip, 'cseq_method', ""),
+        call_id=getattr(sip, 'call_id', None),
+        from_uri=getattr(sip, 'from', ""),
+        to_uri=getattr(sip, 'to', ""),
+        from_tag=getattr(sip, 'from_tag', ""),
+        to_tag=getattr(sip, 'to_tag', ""),
+        from_number=extract_phone(getattr(sip, 'from', ""))
+    )
+
+    if dialog.call_id is None:
+        print(f"call_id is none, method {dialog.method}")
+        continue
+
+    timestamp = now()
+
+    print(dialog)
+    log_active_calls()
+
+    if "180 Ringing" in dialog.status_line:
+        # Deduplicate ringing by from_number (phone number)
+        existing = None
+        for did, call in active_calls.items():
+            if call.state == "ringing" and call.from_number == dialog.from_number:
+                existing = did
+                break
+
+        if existing:
+            print(f"🔁 Updating existing ringing for {dialog.from_number} (was {existing}, now {dialog.id})", flush=True)
+            # Update existing entry with new dialog_id data
+            del active_calls[existing]
+        
+        print(f"🔔 Ringing: {dialog.id}", flush=True)
+        active_calls[dialog.id] = ActiveCall(
+            state= "ringing",
+            from_number= dialog.from_number,
+            to_uri= dialog.to_uri,
+            last_update= timestamp,
         )
-
-        if dialog.call_id is None:
-            print(f"call_id is none, method {dialog.method}")
-            continue
-
-        timestamp = now()
-
-        print(dialog)
         log_active_calls()
 
-        if "180 Ringing" in dialog.status_line:
-            # Deduplicate ringing by from_number (phone number)
-            existing = None
-            for did, call in active_calls.items():
-                if call["state"] == "ringing" and call["from"] == dialog.from_number:
-                    existing = did
-                    break
+    elif "200 OK" in dialog.status_line and dialog.cseq_method == "INVITE":
+        timeout = parse_session_expires(sip)
+        print(f"📞 Call accepted: {dialog.id} (Session-Expires: {timeout}s)", flush=True)
 
-            if existing:
-                print(f"🔁 Updating existing ringing for {dialog.from_number} (was {existing}, now {dialog.id})", flush=True)
-                # Update existing entry with new dialog_id data
-                del active_calls[existing]
-            
-            print(f"🔔 Ringing: {dialog.id}", flush=True)
-            active_calls[dialog.id] = {
-                "state": "ringing",
-                "from": dialog.from_number,
-                "to": dialog.to_uri,
-                "last_update": timestamp,
-                "session_timeout": DEFAULT_SESSION_TIMEOUT,
-            }
-            log_active_calls()
+        to_remove = [
+            cid for cid, data in active_calls.items()
+            if data.state == "active" and cid != dialog.id
+        ]
+        for cid in to_remove:
+            print(f"🧹 Removing other active call: {cid} (conflict with new active)", flush=True)
+            del active_calls[cid]
 
-        elif "200 OK" in dialog.status_line and dialog.cseq_method == "INVITE":
-            timeout = parse_session_expires(sip)
-            print(f"📞 Call accepted: {dialog.id} (Session-Expires: {timeout}s)", flush=True)
+        # Remove any ringing entries with the same phone number
+        to_remove = [
+            cid for cid, data in active_calls.items()
+            if data.state == "ringing" and data.from_number == dialog.from_number and cid != dialog.id
+        ]
+        for cid in to_remove:
+            print(f"🧹 Removing duplicate ringing from same number: {cid}", flush=True)
+            del active_calls[cid]
 
-            to_remove = [
-                cid for cid, data in active_calls.items()
-                if data["state"] == "active" and cid != dialog.id
-            ]
-            for cid in to_remove:
-                print(f"🧹 Removing other active call: {cid} (conflict with new active)", flush=True)
-                del active_calls[cid]
+        active_calls[dialog.id] = ActiveCall(
+            state= "active",
+            from_number= dialog.from_number,
+            to_uri= dialog.to_uri,
+            last_update= timestamp,
+            session_timeout= timeout,
+        )
+        print(f"📞 Call processed: {dialog.id}", flush=True)
+        log_active_calls()
 
-            # Remove any ringing entries with the same phone number
-            to_remove = [
-                cid for cid, data in active_calls.items()
-                if data["state"] == "ringing" and data["from"] == dialog.from_number and cid != dialog.id
-            ]
-            for cid in to_remove:
-                print(f"🧹 Removing duplicate ringing from same number: {cid}", flush=True)
-                del active_calls[cid]
+    elif dialog.method in ["CANCEL"]:
+        removed_any = False
+        to_remove = [cid for cid, call in active_calls.items() if call.from_number == dialog.from_number]
+        for cid in to_remove:
+            print(f"❌ Call ended via {dialog.method}: {cid}", flush=True)
+            del active_calls[cid]
+            removed_any = True
 
-            active_calls[dialog.id] = {
-                "state": "active",
-                "from": dialog.from_number,
-                "to": dialog.to_uri,
-                "last_update": timestamp,
-                "session_timeout": timeout,
-            }
-            print(f"📞 Call processed: {dialog.id}", flush=True)
-            log_active_calls()
+        if not removed_any:
+            print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method}", flush=True)
+        log_active_calls()
 
-        elif dialog.method in ["CANCEL"]:
+    elif dialog.method == "BYE":
+        if dialog.id in active_calls:
+            print(f"❌ Call ended via BYE: {dialog.id}", flush=True)
+            del active_calls[dialog.id]
+        else:
+            print(f"⚠️ No active calls found for {dialog.id} to end via {dialog.method} via dialog_id {dialog.id}", flush=True)
+            print("Looking by from")
             removed_any = False
-            to_remove = [cid for cid, call in active_calls.items() if call["from"] == dialog.from_number]
+            to_remove = [cid for cid, call in active_calls.items() if call.from_number == dialog.from_number]
             for cid in to_remove:
                 print(f"❌ Call ended via {dialog.method}: {cid}", flush=True)
                 del active_calls[cid]
                 removed_any = True
 
             if not removed_any:
-                print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method}", flush=True)
-            log_active_calls()
+                print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method} via {dialog.from_number}", flush=True)
+        log_active_calls()
 
-        elif dialog.method == "BYE":
-            if dialog.id in active_calls:
-                print(f"❌ Call ended via BYE: {dialog.id}", flush=True)
-                del active_calls[dialog.id]
-            else:
-                print(f"⚠️ No active calls found for {dialog.id} to end via {dialog.method} via dialog_id {dialog.id}", flush=True)
-                print("Looking by from")
-                removed_any = False
-                to_remove = [cid for cid, call in active_calls.items() if call["from"] == dialog.from_number]
-                for cid in to_remove:
-                    print(f"❌ Call ended via {dialog.method}: {cid}", flush=True)
-                    del active_calls[cid]
-                    removed_any = True
-
-                if not removed_any:
-                    print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method} via {dialog.from_number}", flush=True)
-            log_active_calls()
-
-        expired = cleanup_expired_sessions()
-        new_state = determine_global_state()
-        if new_state != current_global_state or expired:
-            send_mqtt(new_state)
-
-    except AttributeError:
-        continue
+    update_ringing_timeouts()
+    expired = cleanup_expired_sessions()
+    new_state = determine_global_state()
+    if new_state != current_global_state or expired:
+        send_mqtt(new_state)
 
