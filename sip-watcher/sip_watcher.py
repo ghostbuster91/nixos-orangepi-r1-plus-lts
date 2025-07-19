@@ -292,7 +292,7 @@ for packet in capture.sniff_continuously():
             print(f"❌ Call ended via BYE: {dialog.id}", flush=True)
             del active_calls[dialog.id]
         else:
-            print(f"⚠️ No active calls found for {dialog.id} to end via {dialog.method} via dialog_id {dialog.id}", flush=True)
+            print(f"⚠️ No active calls found for {dialog.id} to end via {dialog.method} from {dialog.from_number}", flush=True)
             print("Looking by from")
             removed_any = False
             to_remove = [cid for cid, call in active_calls.items() if call.from_number == dialog.from_number]
@@ -302,8 +302,51 @@ for packet in capture.sniff_continuously():
                 removed_any = True
 
             if not removed_any:
-                print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method} via {dialog.from_number}", flush=True)
+                print(f"⚠️ No active calls found for {dialog.from_number} to end via {dialog.method}", flush=True)
         log_active_calls()
+
+    elif "486 Busy" in dialog.status_line and dialog.cseq_method == "INVITE":
+        if dialog.id in active_calls:
+            print(f"❌ Call rejected (busy): {dialog.id}", flush=True)
+            del active_calls[dialog.id]
+        else:
+            print(f"⚠️ No active calls found for {dialog.id} to end via Busy from {dialog.from_number}", flush=True)
+            print("Looking by from")
+            removed_any = False
+            to_remove = [cid for cid, call in active_calls.items() if call.from_number == dialog.from_number]
+            for cid in to_remove:
+                print(f"❌ Call ended via Busy: {cid}", flush=True)
+                del active_calls[cid]
+                removed_any = True
+
+            if not removed_any:
+                print(f"⚠️ No active calls found for {dialog.from_number} to end via Busy", flush=True)
+        log_active_calls()
+
+    elif dialog.status_line.startswith("SIP/2.0") and dialog.cseq_method == "INVITE":
+        try:
+            code = int(dialog.status_line.split()[1])
+            if code >= 400:
+                if dialog.id in active_calls:
+                    print(f"❌ Call failed (code {code}): {dialog.id}", flush=True)
+                    del active_calls[dialog.id]
+                    log_active_calls()
+                else:
+                    print(f"⚠️ No active calls found for {dialog.id} to end via {code} from {dialog.from_number}", flush=True)
+                    print("Looking by from")
+                    removed_any = False
+                    to_remove = [cid for cid, call in active_calls.items() if call.from_number == dialog.from_number]
+                    for cid in to_remove:
+                        print(f"❌ Call ended via {code}: {cid}", flush=True)
+                        del active_calls[cid]
+                        removed_any = True
+
+                    if not removed_any:
+                        print(f"⚠️ No active calls found for {dialog.from_number} to end via Busy", flush=True)
+            else:
+                print(f"Unknown response to INVITE for {dialog.id}, {dialog.from_number}")
+        except Exception as e:
+            print(f"Exception occurred when handling sip error {e}")
 
     update_ringing_timeouts()
     expired = cleanup_expired_sessions()
